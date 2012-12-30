@@ -4,3 +4,11 @@
 *.jar
 *.war
 *.ear
+
+# Eclipse Files #
+.settings
+.project
+
+# Project Specific Excludes #
+token
+*.epub
