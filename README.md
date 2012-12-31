@@ -1,4 +1,4 @@
 readability2epub
 ================
 
-a java program to retrieve readability.com articles as epub
+a java 1.7 program to retrieve readability.com articles as epub
