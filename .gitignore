@@ -12,3 +12,4 @@
 # Project Specific Excludes #
 token
 *.epub
+/.classpath
