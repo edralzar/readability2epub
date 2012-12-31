@@ -18,8 +18,16 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.StringReader;
 import java.net.URL;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.Date;
 import java.util.List;
+import java.util.TimeZone;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -45,6 +53,8 @@ import org.scribe.model.Verifier;
 import org.scribe.oauth.OAuthService;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -103,17 +113,90 @@ public class Main {
 		}
 
 		if (accessToken != null && !accessToken.isEmpty()) {
-			// epubArticle(service, accessToken, "f4tjhbmy");
-			epubArticle(service, accessToken, "h9yqlacd");
-			// epubArticle(service, accessToken, "yb5ppnvf");
+			getLastBookmarks(service, accessToken);
 			System.out.println("DONE");
 		} else {
 			System.err.println("Unable to get access to the API");
 		}
 	}
 
+	private static void getLastBookmarks(OAuthService service, Token accessToken) {
+		String since = null;
+		File f = new File("lastSync");
+		if (f.exists()) {
+			// get the date of last synchronization
+			Path p = FileSystems.getDefault().getPath(f.getAbsolutePath());
+			try {
+				FileTime lastModified = Files.getLastModifiedTime(p);
+				SimpleDateFormat sdf = new SimpleDateFormat(
+						"yyyyMMdd'T'hh:mm:ss");
+				Date d = new Date(lastModified.toMillis());
+				Calendar c = Calendar.getInstance();
+				c.setTime(d);
+				c.setTimeZone(TimeZone.getTimeZone("UTC"));
+				since = sdf.format(c.getTime());
+			} catch (IOException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+		}
+
+		OAuthRequest request = new OAuthRequest(Verb.GET,
+				"https://www.readability.com/api/rest/v1/bookmarks/");
+		request.addQuerystringParameter("archive", "0");
+		if (since != null) {
+			request.addQuerystringParameter("addedSince", since);
+			System.out.println("will get bookmarks added since " + since);
+		}
+
+		service.signRequest(accessToken, request);
+		Response response = request.send();
+
+		JsonParser parser = new JsonParser();
+		JsonObject json = parser.parse(response.getBody()).getAsJsonObject();
+		JsonArray bookmarks = json.getAsJsonArray("bookmarks");
+		for (JsonElement b : bookmarks) {
+			JsonObject article = b.getAsJsonObject().getAsJsonObject("article");
+			String articleId = article.get("id").getAsString();
+			String title = article.get("title").getAsString();
+
+			File epubFile = getEpubName(articleId, title);
+			if (!epubFile.exists()) {
+				epubArticle(service, accessToken, articleId, epubFile);
+			} else {
+				System.out.println("Article \"" + title
+						+ "\" was already present as \"" + epubFile.getName()
+						+ "\"\n SKIPPED");
+			}
+		}
+
+		if (f.exists()) {
+			f.delete();
+		}
+		try {
+			f.createNewFile();
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+	}
+
+	private static File getEpubName(String articleId, String title) {
+		StringBuilder fileName = new StringBuilder(title);
+		if (fileName.length() > 15) {
+			fileName.delete(15, fileName.length());
+		}
+		fileName.insert(0, '_');
+		fileName.insert(0, articleId);
+		fileName.insert(0, "rdb_");
+		fileName.append(".epub");
+		String fileNameClean = fileName.toString().replaceAll(
+				"[^\\w)\\-.(\\s]", " ");
+		return new File(fileNameClean);
+	}
+
 	private static void epubArticle(OAuthService service, Token accessToken,
-			String articleId) {
+			String articleId, File epubFile) {
 		OAuthRequest request = new OAuthRequest(Verb.GET,
 				"https://www.readability.com/api/rest/v1/articles/" + articleId);
 
@@ -223,15 +306,6 @@ public class Main {
 		// write the epub
 		EpubWriter writer = new EpubWriter();
 		try {
-			StringBuilder fileName = new StringBuilder(title);
-			if (fileName.length() > 15) {
-				fileName.delete(15, fileName.length());
-			}
-			fileName.insert(0, '_');
-			fileName.insert(0, articleId);
-			fileName.insert(0, "rdb_");
-			fileName.append(".epub");
-			File epubFile = new File(fileName.toString());
 			writer.write(book, new FileOutputStream(epubFile));
 			System.out.println(epubFile + " created successfully");
 		} catch (FileNotFoundException e) {

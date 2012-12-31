@@ -13,3 +13,4 @@
 token
 *.epub
 /.classpath
+/lastSync
