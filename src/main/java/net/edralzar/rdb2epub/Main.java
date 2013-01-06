@@ -116,7 +116,7 @@ public class Main {
 		}
 
 		BookmarkList bookmarks = service.getBookmarks().addedSince(since)
-				.find();
+				.verbose().find();
 		for (Bookmark bookmark : bookmarks.getBookmarks()) {
 			SimpleArticle article = bookmark.getArticle();
 
@@ -283,7 +283,7 @@ public class Main {
 		// insert the cover logo
 		try {
 			BufferedImage logo = ImageIO.read(Main.class
-					.getResource("cover_logo.png"));
+					.getResource("/cover_logo.png"));
 			g.drawImage(logo, (COVER_WIDTH - COVERLOGO_WIDTH) / 2, 100, null);
 		} catch (IOException e) {
 			// TODO Auto-generated catch block
