@@ -8,14 +8,11 @@ import java.awt.image.BufferedImage;
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
 import java.io.StringReader;
 import java.net.URL;
 import java.nio.file.FileSystems;
@@ -33,8 +30,15 @@ import java.util.regex.Pattern;
 
 import javax.imageio.ImageIO;
 
-import net.edralzar.rdb2epub.oauth.ReadabilityApi;
-import net.edralzar.rdb2epub.oauth.ReadabilityConst;
+import net.edralzar.jreadability.ReadabilityException;
+import net.edralzar.jreadability.data.Article;
+import net.edralzar.jreadability.data.Bookmark;
+import net.edralzar.jreadability.data.BookmarkList;
+import net.edralzar.jreadability.data.SimpleArticle;
+import net.edralzar.jreadability.oauth.store.FileStore;
+import net.edralzar.jreadability.service.ReadabilityService;
+import net.edralzar.jreadability.service.ReadabilityServiceBuilder;
+import net.edralzar.jreadability.service.ReadabilityServiceBuilder.IAuthenticationDelegate;
 import nl.siegmann.epublib.domain.Author;
 import nl.siegmann.epublib.domain.Book;
 import nl.siegmann.epublib.domain.Resource;
@@ -44,19 +48,6 @@ import nl.siegmann.epublib.service.MediatypeService;
 import org.htmlcleaner.HtmlCleaner;
 import org.htmlcleaner.PrettyHtmlSerializer;
 import org.htmlcleaner.TagNode;
-import org.scribe.builder.ServiceBuilder;
-import org.scribe.model.OAuthRequest;
-import org.scribe.model.Response;
-import org.scribe.model.Token;
-import org.scribe.model.Verb;
-import org.scribe.model.Verifier;
-import org.scribe.oauth.OAuthService;
-
-import com.google.gson.Gson;
-import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 
 public class Main {
 
@@ -72,56 +63,39 @@ public class Main {
 	public static final String TOKEN_FILENAME = "token";
 
 	public static void main(String[] args) {
-		OAuthService service = new ServiceBuilder()
-				.apiKey(ReadabilityConst.API_KEY)
-				.apiSecret(ReadabilityConst.API_SECRET)
-				.provider(ReadabilityApi.class).callback("oob").build();
-		Token accessToken = null;
-		File tokenFile = new File(TOKEN_FILENAME);
-		if (tokenFile.exists() && tokenFile.isFile()) {
-			try {
-				accessToken = (Token) new ObjectInputStream(
-						new FileInputStream(tokenFile)).readObject();
-			} catch (Exception e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			}
-		} else {
-			Token reqToken = service.getRequestToken();
+		IAuthenticationDelegate delegate = new IAuthenticationDelegate() {
 
-			String authUrl = service.getAuthorizationUrl(reqToken);
+			@Override
+			public String onAuthenticationNeeded(String authUrl) {
+				System.out.println("Please go to " + authUrl
+						+ " to get an authentication PIN and enter it there");
 
-			System.out.println("Please go to " + authUrl
-					+ " to get an authentication PIN and enter it there");
-
-			BufferedReader in = new BufferedReader(new InputStreamReader(
-					System.in));
-			try {
-				String pin = in.readLine();
-
+				BufferedReader in = new BufferedReader(new InputStreamReader(
+						System.in));
+				String pin;
+				try {
+					pin = in.readLine();
+				} catch (IOException e) {
+					throw new ReadabilityException("Cannot read pin", e);
+				}
 				System.out.println("Verifying with PIN " + pin);
 
-				Verifier v = new Verifier(pin);
-				accessToken = service.getAccessToken(reqToken, v);
-
-				new ObjectOutputStream(new FileOutputStream(TOKEN_FILENAME))
-						.writeObject(accessToken);
-			} catch (IOException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
+				return pin;
 			}
-		}
+		};
 
-		if (accessToken != null && !accessToken.isEmpty()) {
-			getLastBookmarks(service, accessToken);
+		try {
+			ReadabilityService service = ReadabilityServiceBuilder.build(new FileStore(), delegate);
+			getLastBookmarks(service);
 			System.out.println("DONE");
-		} else {
+		} catch (ReadabilityException e) {
 			System.err.println("Unable to get access to the API");
+			e.printStackTrace();
 		}
 	}
 
-	private static void getLastBookmarks(OAuthService service, Token accessToken) {
-		String since = null;
+	private static void getLastBookmarks(ReadabilityService service) {
+		Date since = null;
 		File f = new File("lastSync");
 		if (f.exists()) {
 			// get the date of last synchronization
@@ -134,37 +108,23 @@ public class Main {
 				Calendar c = Calendar.getInstance();
 				c.setTime(d);
 				c.setTimeZone(TimeZone.getTimeZone("UTC"));
-				since = sdf.format(c.getTime());
+				since = c.getTime();
 			} catch (IOException e) {
 				// TODO Auto-generated catch block
 				e.printStackTrace();
 			}
 		}
 
-		OAuthRequest request = new OAuthRequest(Verb.GET,
-				"https://www.readability.com/api/rest/v1/bookmarks/");
-		request.addQuerystringParameter("archive", "0");
-		if (since != null) {
-			request.addQuerystringParameter("addedSince", since);
-			System.out.println("will get bookmarks added since " + since);
-		}
+		BookmarkList bookmarks = service.getBookmarks().addedSince(since)
+				.find();
+		for (Bookmark bookmark : bookmarks.getBookmarks()) {
+			SimpleArticle article = bookmark.getArticle();
 
-		service.signRequest(accessToken, request);
-		Response response = request.send();
-
-		JsonParser parser = new JsonParser();
-		JsonObject json = parser.parse(response.getBody()).getAsJsonObject();
-		JsonArray bookmarks = json.getAsJsonArray("bookmarks");
-		for (JsonElement b : bookmarks) {
-			JsonObject article = b.getAsJsonObject().getAsJsonObject("article");
-			String articleId = article.get("id").getAsString();
-			String title = article.get("title").getAsString();
-
-			File epubFile = getEpubName(articleId, title);
+			File epubFile = getEpubName(article.getId(), article.getTitle());
 			if (!epubFile.exists()) {
-				epubArticle(service, accessToken, articleId, epubFile);
+				epubArticle(service, bookmark, epubFile);
 			} else {
-				System.out.println("Article \"" + title
+				System.out.println("Article \"" + article.getTitle()
 						+ "\" was already present as \"" + epubFile.getName()
 						+ "\"\n SKIPPED");
 			}
@@ -195,20 +155,14 @@ public class Main {
 		return new File(fileNameClean);
 	}
 
-	private static void epubArticle(OAuthService service, Token accessToken,
-			String articleId, File epubFile) {
-		OAuthRequest request = new OAuthRequest(Verb.GET,
-				"https://www.readability.com/api/rest/v1/articles/" + articleId);
+	private static void epubArticle(ReadabilityService service,
+			Bookmark bookmark, File epubFile) {
 
-		service.signRequest(accessToken, request);
-		Response response = request.send();
-
-		Gson gson = new Gson();
-		JsonParser parser = new JsonParser();
-		JsonObject json = parser.parse(response.getBody()).getAsJsonObject();
-		String content = gson.fromJson(json.get("content"), String.class);
-		String title = gson.fromJson(json.get("title"), String.class);
-		String author = gson.fromJson(json.get("author"), String.class);
+		Article fullArticle = service.getArticle(bookmark.getArticle().getId());
+		String articleId = fullArticle.getId();
+		String title = fullArticle.getTitle();
+		String content = fullArticle.getContent();
+		String author = fullArticle.getAuthor();
 
 		System.out.println("Preparing epub for article " + articleId + ", "
 				+ title);
@@ -266,12 +220,12 @@ public class Main {
 			StringBuilder cover = new StringBuilder(
 					"<html xmlns=\"http://www.w3.org/1999/xhtml\">");
 			cover.append("\n<head>\n<title>").append(title)
-					.append("</title>\n");
+			.append("</title>\n");
 			cover.append(" <style type=\"text/css\"> img { max-width: 100%; }</style>\n");
 			cover.append("</head>");
 			cover.append("\n<body>\n");
 			cover.append("<img src=\"cover.png\" alt=\"").append(title)
-					.append("\" />");
+			.append("\" />");
 			cover.append("\n</body>\n</html>");
 
 			Resource coverResource = new Resource(cover.toString().getBytes(),
@@ -284,7 +238,7 @@ public class Main {
 		StringBuilder xhtml = new StringBuilder(
 				"<html xmlns=\"http://www.w3.org/1999/xhtml\">");
 		xhtml.append("\n<head>\n<title>").append(title)
-				.append("</title>\n</head>");
+		.append("</title>\n</head>");
 		xhtml.append("\n<body>\n");
 		xhtml.append(content);
 		xhtml.append("\n</body>\n</html>");
